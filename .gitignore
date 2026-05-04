@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+memory.db
+tts_cache/
+*.mp3
+.env
