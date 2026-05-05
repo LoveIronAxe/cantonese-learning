@@ -1,79 +1,70 @@
-"""SQLite-based conversation memory."""
+"""JSON file-based conversation memory. Works on Vercel serverless + local."""
 
-import sqlite3
 import json
 import time
+import os
+import threading
 from pathlib import Path
 
-DB_PATH = Path(__file__).parent / "memory.db"
+# On Vercel, use /tmp (the only writable directory). Locally use backend dir.
+if os.environ.get("VERCEL"):
+    STORE_PATH = Path("/tmp/memory.json")
+else:
+    STORE_PATH = Path(__file__).parent / "memory.json"
+
+_lock = threading.Lock()
 
 
-def get_db() -> sqlite3.Connection:
-    db = sqlite3.connect(str(DB_PATH))
-    db.row_factory = sqlite3.Row
-    db.execute("PRAGMA journal_mode=WAL")
-    db.execute("PRAGMA foreign_keys=ON")
-    return db
+def _load() -> dict:
+    if STORE_PATH.exists():
+        try:
+            with open(STORE_PATH, "r") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, IOError):
+            pass
+    return {"conversations": {}, "order": []}
 
 
-def init_db():
-    db = get_db()
-    db.executescript("""
-        CREATE TABLE IF NOT EXISTS conversations (
-            id TEXT PRIMARY KEY,
-            title TEXT NOT NULL DEFAULT '新對話',
-            level TEXT NOT NULL DEFAULT 'beginner',
-            created_at REAL NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS messages (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            conversation_id TEXT NOT NULL,
-            role TEXT NOT NULL CHECK(role IN ('user', 'assistant')),
-            cantonese TEXT,
-            jyutping TEXT,
-            mandarin_help TEXT,
-            user_text TEXT,
-            created_at REAL NOT NULL,
-            FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
-        );
-        CREATE INDEX IF NOT EXISTS idx_msg_conv ON messages(conversation_id, id);
-    """)
-    db.commit()
-    db.close()
+def _save(data: dict):
+    STORE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    tmp = str(STORE_PATH) + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(data, f, ensure_ascii=False)
+    os.replace(tmp, str(STORE_PATH))
 
 
 def create_conversation(conv_id: str, title: str = "新對話", level: str = "beginner"):
-    db = get_db()
-    db.execute(
-        "INSERT INTO conversations (id, title, level, created_at) VALUES (?, ?, ?, ?)",
-        (conv_id, title, level, time.time()),
-    )
-    db.commit()
-    db.close()
+    with _lock:
+        data = _load()
+        data["conversations"][conv_id] = {
+            "id": conv_id,
+            "title": title,
+            "level": level,
+            "created_at": time.time(),
+            "messages": [],
+        }
+        data["order"].insert(0, conv_id)
+        _save(data)
 
 
 def get_conversation(conv_id: str) -> dict | None:
-    db = get_db()
-    row = db.execute("SELECT * FROM conversations WHERE id = ?", (conv_id,)).fetchone()
-    if not row:
-        db.close()
-        return None
-    conv = dict(row)
-    msgs = db.execute(
-        "SELECT * FROM messages WHERE conversation_id = ? ORDER BY id", (conv_id,)
-    ).fetchall()
-    conv["messages"] = [dict(m) for m in msgs]
-    db.close()
-    return conv
+    data = _load()
+    return data["conversations"].get(conv_id)
 
 
 def list_conversations() -> list[dict]:
-    db = get_db()
-    rows = db.execute(
-        "SELECT * FROM conversations ORDER BY created_at DESC"
-    ).fetchall()
-    db.close()
-    return [dict(r) for r in rows]
+    data = _load()
+    result = []
+    for cid in data["order"]:
+        conv = data["conversations"].get(cid)
+        if conv:
+            result.append({
+                "id": conv["id"],
+                "title": conv["title"],
+                "level": conv["level"],
+                "created_at": conv["created_at"],
+            })
+    return result
 
 
 def add_message(
@@ -84,51 +75,62 @@ def add_message(
     mandarin_help: str | None = None,
     user_text: str | None = None,
 ):
-    db = get_db()
-    db.execute(
-        """INSERT INTO messages (conversation_id, role, cantonese, jyutping, mandarin_help, user_text, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?)""",
-        (conversation_id, role, cantonese, jyutping, mandarin_help, user_text, time.time()),
-    )
-    # Update conversation title from first user message
-    if role == "user" and user_text:
-        existing = db.execute(
-            "SELECT COUNT(*) as c FROM messages WHERE conversation_id = ? AND role = 'user'",
-            (conversation_id,),
-        ).fetchone()
-        if existing["c"] == 1:
-            title = user_text[:30] + ("..." if len(user_text) > 30 else "")
-            db.execute(
-                "UPDATE conversations SET title = ? WHERE id = ?",
-                (title, conversation_id),
-            )
-    db.commit()
-    db.close()
+    with _lock:
+        data = _load()
+        conv = data["conversations"].get(conversation_id)
+        if not conv:
+            return
+        msg = {
+            "id": len(conv["messages"]) + 1,
+            "role": role,
+            "cantonese": cantonese,
+            "jyutping": jyutping,
+            "mandarin_help": mandarin_help,
+            "user_text": user_text,
+            "created_at": time.time(),
+        }
+        conv["messages"].append(msg)
+        # Update title from first user message
+        if role == "user" and user_text:
+            user_count = sum(1 for m in conv["messages"] if m["role"] == "user")
+            if user_count == 1:
+                conv["title"] = user_text[:30] + ("..." if len(user_text) > 30 else "")
+        _save(data)
 
 
 def get_messages(conversation_id: str) -> list[dict]:
-    db = get_db()
-    rows = db.execute(
-        "SELECT * FROM messages WHERE conversation_id = ? ORDER BY id",
-        (conversation_id,),
-    ).fetchall()
-    db.close()
-    return [dict(r) for r in rows]
+    conv = get_conversation(conversation_id)
+    if not conv:
+        return []
+    return conv["messages"]
 
 
 def update_level(conv_id: str, level: str):
-    db = get_db()
-    db.execute("UPDATE conversations SET level = ? WHERE id = ?", (level, conv_id))
-    db.commit()
-    db.close()
+    with _lock:
+        data = _load()
+        if conv_id in data["conversations"]:
+            data["conversations"][conv_id]["level"] = level
+            _save(data)
 
 
 def delete_conversation(conv_id: str):
-    db = get_db()
-    db.execute("DELETE FROM conversations WHERE id = ?", (conv_id,))
-    db.commit()
-    db.close()
+    with _lock:
+        data = _load()
+        data["conversations"].pop(conv_id, None)
+        if conv_id in data["order"]:
+            data["order"].remove(conv_id)
+        _save(data)
 
 
-# Initialize on import
-init_db()
+def update_last_help(conv_id: str, help_text: str):
+    """Update mandarin_help on the last assistant message."""
+    with _lock:
+        data = _load()
+        conv = data["conversations"].get(conv_id)
+        if not conv:
+            return
+        for m in reversed(conv["messages"]):
+            if m["role"] == "assistant":
+                m["mandarin_help"] = help_text
+                _save(data)
+                return

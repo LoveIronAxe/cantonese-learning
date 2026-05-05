@@ -1,5 +1,6 @@
 """FastAPI server for Cantonese Learning App."""
 
+import os
 import uuid
 import asyncio
 from pathlib import Path
@@ -108,18 +109,7 @@ async def api_help(req: HelpRequest):
 
     # Update last assistant message with help
     if help_text:
-        db = memory.get_db()
-        last = db.execute(
-            "SELECT id FROM messages WHERE conversation_id = ? AND role = 'assistant' ORDER BY id DESC LIMIT 1",
-            (req.conversation_id,),
-        ).fetchone()
-        if last:
-            db.execute(
-                "UPDATE messages SET mandarin_help = ? WHERE id = ?",
-                (help_text, last["id"]),
-            )
-        db.commit()
-        db.close()
+        memory.update_last_help(req.conversation_id, help_text)
 
     return {"mandarin_help": help_text}
 
@@ -192,15 +182,15 @@ async def api_update_level(conv_id: str, req: UpdateLevelRequest):
     return {"ok": True}
 
 
-# ─── Static Files ─────────────────────────────────────────
+# ─── Static Files (local dev only, Vercel handles this separately) ───
 
-@app.get("/")
-async def serve_index():
-    return FileResponse(STATIC_DIR / "index.html")
+if not os.environ.get("VERCEL"):
+    @app.get("/")
+    async def serve_index():
+        return FileResponse(STATIC_DIR / "index.html")
 
-
-if STATIC_DIR.exists():
-    app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+    if STATIC_DIR.exists():
+        app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 
 # ─── Entrypoint ───────────────────────────────────────────
