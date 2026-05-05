@@ -6,7 +6,10 @@ Uses structured text output format since the DeepSeek proxy doesn't support tool
 import os
 import re
 from anthropic import Anthropic
+from dotenv import load_dotenv
 from .prompts import get_system_prompt, HELP_MODE_EXTRA
+
+load_dotenv()
 
 API_KEY = os.environ.get("ANTHROPIC_AUTH_TOKEN", "")
 BASE_URL = os.environ.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com")
