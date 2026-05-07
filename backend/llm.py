@@ -15,7 +15,14 @@ API_KEY = os.environ.get("ANTHROPIC_AUTH_TOKEN", "")
 BASE_URL = os.environ.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com")
 MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-6")
 
-client = Anthropic(api_key=API_KEY, base_url=BASE_URL)
+_client = None
+
+
+def _get_client():
+    global _client
+    if _client is None:
+        _client = Anthropic(api_key=API_KEY, base_url=BASE_URL)
+    return _client
 
 OUTPUT_FORMAT = """
 【输出格式 - 必须严格遵守】
@@ -62,7 +69,7 @@ def chat(conversation_messages: list[dict], level: str, help_mode: bool = False)
     """Send a chat request and return structured Cantonese response."""
     system_prompt, messages = build_messages(conversation_messages, level, help_mode)
 
-    response = client.messages.create(
+    response = _get_client().messages.create(
         model=MODEL,
         max_tokens=1024,
         system=system_prompt,

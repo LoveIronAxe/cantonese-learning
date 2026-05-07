@@ -1,12 +1,22 @@
 """Cantonese TTS using edge-tts with adjustable speed and caching."""
 
+import os
 import hashlib
 import asyncio
 import tempfile
 from pathlib import Path
-import edge_tts
 
-CACHE_DIR = Path(__file__).parent / "tts_cache"
+try:
+    import edge_tts
+    _EDGE_TTS_AVAILABLE = True
+except Exception:
+    _EDGE_TTS_AVAILABLE = False
+
+# Use /tmp for cache on Vercel (read-only filesystem)
+if os.environ.get("VERCEL"):
+    CACHE_DIR = Path("/tmp/tts_cache")
+else:
+    CACHE_DIR = Path(__file__).parent.parent / "tts_cache"
 CACHE_DIR.mkdir(exist_ok=True)
 
 # Cantonese voices available in edge-tts
@@ -40,6 +50,9 @@ async def generate_audio(
     rate: float = 1.0,
 ) -> bytes:
     """Generate Cantonese TTS audio, returns MP3 bytes. Cached by content."""
+    if not _EDGE_TTS_AVAILABLE:
+        raise RuntimeError("TTS 不可用：edge-tts 未正確載入（Vercel 環境不支援）")
+
     voice_name = VOICES.get(voice, VOICES[DEFAULT_VOICE])
     rate_str = _rate_to_string(rate)
     key = _cache_key(text, voice_name, rate_str)
@@ -68,6 +81,15 @@ async def generate_audio(
 
 async def get_voices() -> list[dict]:
     """List available Cantonese voices."""
+    if not _EDGE_TTS_AVAILABLE:
+        return [
+            {"id": k, "name": v, "label": l, "unavailable": True}
+            for k, v, l in [
+                ("female1", "zh-HK-HiuGaaiNeural", "曉佳 (女-清晰) — Vercel 不支援"),
+                ("female2", "zh-HK-HiuMaanNeural", "曉曼 (女-自然) — Vercel 不支援"),
+                ("male", "zh-HK-WanLungNeural", "雲龍 (男-沉穩) — Vercel 不支援"),
+            ]
+        ]
     return [
         {"id": k, "name": v, "label": {"female1": "曉佳 (女-清晰)", "female2": "曉曼 (女-自然)", "male": "雲龍 (男-沉穩)"}[k]}
         for k, v in VOICES.items()
